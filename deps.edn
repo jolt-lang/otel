@@ -7,9 +7,10 @@
  ;; supplies libssl/libcrypto, and naming it makes the OpenSSL requirement
  ;; visible rather than an implicit transitive fact.
  :deps {jolt-lang/http-client {:git/url "https://github.com/jolt-lang/http-client"
-                               :git/sha "af407efe3006febcb561bc1ac6a393c6bad6f41c"}
+                               :git/tag "v0.0.6"
+                               :git/sha "177b1ce4e529ffe052e6a1b7b103ed924de535f6"}
         jolt-lang/jolt-crypto {:git/url "https://github.com/jolt-lang/jolt-crypto"
-                               :git/sha "1ab72aa5f73be7ec41f01086953ffb43ecd3d84e"}
+                               :git/sha "584a4d32094f0a72613d028deb944de00cd9fc11"}
         org.clojure/tools.logging {:git/url "https://github.com/jolt-lang/logging"
                                    :git/sha "ec6747e55583118d881faf4ab41e68d7e587ce4c"}}
 
