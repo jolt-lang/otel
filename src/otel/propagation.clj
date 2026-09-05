@@ -76,9 +76,10 @@
   "The traceparent header for a span context."
   [sc]
   (str "00-" (:trace-id sc) "-" (:span-id sc) "-"
-       ;; Only the flags defined by this version are propagated; the spec allows
-       ;; a version-00 sender to drop bits it does not understand.
-       (if (trace/sampled? sc) "01" "00")))
+       ;; Level 2 defines sampled and random-trace-id. Reserved bits must be zero
+       ;; when this implementation writes version 00.
+       (format "%02x" (bit-and (or (:trace-flags sc) 0)
+                              (bit-or trace/flag-sampled trace/flag-random)))))
 
 (def ^:private tracestate-max-entries
   "The spec's cap. A list longer than this is truncated rather than rejected."

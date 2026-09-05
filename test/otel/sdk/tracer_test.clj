@@ -265,7 +265,26 @@
   (let [{:keys [tracer exporter]} (setup {:sampler sampler/always-on})]
     (trace/with-span [sp tracer "op"]
       (is (trace/sampled? (trace/span-context-of sp))))
-    (is (get-in (first (memory/spans exporter)) [:span-context :trace-flags]))))
+    (is (= (bit-or trace/flag-sampled trace/flag-random)
+           (get-in (first (memory/spans exporter)) [:span-context :trace-flags])))))
+
+(deftest children-preserve-the-parents-random-trace-id-flag
+  (doseq [[parent-flags sampler expected]
+          [[(bit-or trace/flag-sampled trace/flag-random)
+            sampler/always-off
+            trace/flag-random]
+           [trace/flag-random
+            sampler/always-on
+            (bit-or trace/flag-sampled trace/flag-random)]]]
+    (let [{:keys [tracer]} (setup {:sampler sampler})
+          parent (trace/span-context {:trace-id (id/trace-id)
+                                      :span-id (id/span-id)
+                                      :trace-flags parent-flags
+                                      :remote? true})
+          parent-context (trace/context-with-span
+                           ctx/root (trace/non-recording-span parent))
+          child (trace/start-span tracer "child" {:parent parent-context})]
+      (is (= expected (:trace-flags (trace/span-context-of child)))))))
 
 ;; --- ended span semantics ---------------------------------------------------
 
