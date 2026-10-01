@@ -108,6 +108,21 @@
         carrier (prop/inject prop/trace-context (ctx-with sc) {})]
     (is (= (str "00-" tid "-" sid "-00") (get carrier "traceparent")))))
 
+(deftest preserves-the-w3c-random-trace-id-flag
+  (let [incoming (str "00-" tid "-" sid "-02")
+        context (prop/extract prop/trace-context ctx/root {"traceparent" incoming})
+        sc (trace/span-context-of (trace/span-from-context context))
+        carrier (prop/inject prop/trace-context context {})]
+    (is (= trace/flag-random (:trace-flags sc)))
+    (is (not (trace/sampled? sc)))
+    (is (= incoming (get carrier "traceparent")))))
+
+(deftest clears-reserved-trace-flags-when-writing-version-00
+  (let [sc (trace/span-context {:trace-id tid :span-id sid :trace-flags 255})
+        carrier (prop/inject prop/trace-context (ctx-with sc) {})]
+    (is (= (str "00-" tid "-" sid "-03")
+           (get carrier "traceparent")))))
+
 (deftest injects-tracestate-when-present
   (let [sc (trace/span-context {:trace-id tid :span-id sid :sampled? true
                                 :trace-state [["a" "1"] ["b" "2"]]})

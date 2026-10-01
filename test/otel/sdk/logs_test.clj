@@ -81,7 +81,8 @@
             [s] (memory/spans span-exporter)]
         (is (= (get-in s [:span-context :trace-id]) (:trace-id r)))
         (is (= (get-in s [:span-context :span-id]) (:span-id r)))
-        (is (= 1 (:trace-flags r)))))))
+        (is (= (bit-or trace/flag-sampled trace/flag-random)
+               (:trace-flags r)))))))
 
 (deftest a-record-outside-a-span-has-no-ids
   (let [{:keys [logger exporter]} (setup)]

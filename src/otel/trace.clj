@@ -18,12 +18,15 @@
   "Bit 0 of trace-flags: the sampled flag, as defined by W3C Trace Context."
   1)
 
+(def flag-random
+  "Bit 1 of trace-flags: the trace id has W3C Level 2 randomness."
+  2)
+
 (defrecord SpanContext [trace-id span-id trace-flags trace-state remote?])
 
 (defn span-context
   "Build a span context. `:sampled?` is a convenience for setting bit 0 of
-  `:trace-flags`; pass `:trace-flags` directly to preserve bits this version does
-  not know about — the W3C spec requires unknown flags to survive propagation.
+  `:trace-flags`; pass `:trace-flags` directly when carrying the W3C random flag.
   `:trace-state` is an ordered vector of [key value] pairs."
   [{:keys [trace-id span-id trace-flags trace-state sampled? remote?]}]
   (->SpanContext trace-id

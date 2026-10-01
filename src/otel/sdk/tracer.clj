@@ -44,7 +44,17 @@
               sc (trace/span-context
                    {:trace-id trace-id
                     :span-id span-id
-                    :sampled? (sampler/sampled? decision)
+                    ;; The sampler owns bit 0. Bit 1 describes the trace id and
+                    ;; therefore stays unchanged while a trace is continued.
+                    ;; New trace ids come from otel.id's random generator.
+                    :trace-flags
+                    (bit-or (if (sampler/sampled? decision)
+                              trace/flag-sampled
+                              0)
+                            (if parent?
+                              (bit-and (or (:trace-flags parent-sc) 0)
+                                       trace/flag-random)
+                              trace/flag-random))
                     ;; The parent's trace state travels on unless the sampler
                     ;; replaced it — it is how vendors carry their own routing
                     ;; data along a trace.

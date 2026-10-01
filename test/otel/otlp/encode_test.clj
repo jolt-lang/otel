@@ -116,7 +116,8 @@
           outer (first (filter #(= "outer" (:name %)) spans))]
       (is (= (:spanId outer) (:parentSpanId inner)))
       (is (not (contains? outer :parentSpanId)) "a root span has no parentSpanId")
-      (is (= 1 (:flags inner)) "the sampled bit"))))
+      (is (= (bit-or trace/flag-sampled trace/flag-random) (:flags inner))
+          "sampled and random-trace-id bits"))))
 
 (deftest omits-empty-collections
   (testing "an empty attribute or event list is left out rather than sent as []"
