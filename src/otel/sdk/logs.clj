@@ -129,6 +129,9 @@
                    :attributes (attr/normalize (:attributes record) lim)
                    :resource resource
                    :scope scope}
+            (and (string? (:event-name record))
+                 (not (empty? (:event-name record))))
+            (assoc :event-name (:event-name record))
             (trace/valid? sc) (assoc :trace-id (:trace-id sc)
                                      :span-id (:span-id sc)
                                      :trace-flags (:trace-flags sc))))))

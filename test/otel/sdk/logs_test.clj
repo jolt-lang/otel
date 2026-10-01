@@ -66,6 +66,21 @@
     (logs/emit! logger {:body "x" :severity :info :timestamp 55})
     (is (= 55 (:timestamp-unix-nano (first (memory/records exporter)))))))
 
+(deftest a-named-event-is-preserved
+  (let [{:keys [logger exporter]} (setup)]
+    (logs/emit! logger {:event-name "durable.operation.completed"
+                        :body {:outcome "ok"}
+                        :severity :info})
+    (is (= "durable.operation.completed"
+           (:event-name (first (memory/records exporter)))))))
+
+(deftest invalid-event-names-remain-ordinary-log-records
+  (doseq [event-name [nil "" :durable.operation.completed 42]]
+    (let [{:keys [logger exporter]} (setup)]
+      (logs/emit! logger {:event-name event-name :body "ordinary" :severity :info})
+      (is (not (contains? (first (memory/records exporter)) :event-name))
+          (str "invalid event name must be ignored: " (pr-str event-name))))))
+
 ;; --- correlation ------------------------------------------------------------
 
 (deftest a-record-emitted-in-a-span-carries-its-ids
@@ -140,6 +155,31 @@
       (is (= [{:key "k" :value {:stringValue "v"}}] (:attributes r)))
       (testing "no event time was set, so timeUnixNano is omitted rather than zero"
         (is (not (contains? r :timeUnixNano)))))))
+
+(deftest encodes-a-correlated-named-event
+  (let [{:keys [logger exporter]} (setup)
+        tp (sdk-tracer/tracer-provider {:resource res/empty-resource})
+        tracer (sdk-tracer/get-tracer tp {:name "t"})]
+    (trace/with-span [sp tracer "durable.flush"]
+      (logs/emit! logger {:event-name "durable.operation.completed"
+                          :body {:outcome "ok"}
+                          :severity :info}))
+    (let [record (first (memory/records exporter))
+          encoded (-> (enc/logs-request [record])
+                      :resourceLogs first :scopeLogs first :logRecords first)]
+      (is (= "durable.operation.completed" (:eventName encoded)))
+      (is (= (:trace-id record) (:traceId encoded)))
+      (is (= (:span-id record) (:spanId encoded))))))
+
+(deftest otlp-encoding-omits-invalid-event-names
+  (doseq [event-name [nil "" :event 42]]
+    (let [encoded (enc/log-record->otlp
+                    {:body "ordinary"
+                     :event-name event-name
+                     :observed-time-unix-nano 1})]
+      (is (not (contains? encoded :eventName))
+          (str "invalid canonical event name must not reach OTLP: "
+               (pr-str event-name))))))
 
 (deftest encodes-correlation-ids
   (let [{:keys [logger exporter]} (setup)

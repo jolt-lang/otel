@@ -193,7 +193,19 @@ onto the spec's severity ranges (`:trace` 1, `:debug` 5, `:info` 9, `:warn` 13,
 `exception.type` / `exception.message` / `exception.data` attributes.
 
 `otel.logs/emit!` is there for a bridge from another logging library, or for
-emitting structured records directly.
+emitting structured records directly. A non-empty `:event-name` distinguishes a
+semantically named OpenTelemetry Event from an ordinary log record while
+retaining the same active-span correlation:
+
+```clojure
+(logs/emit! logger
+  {:event-name "durable.operation.completed"
+   :body {:outcome "ok" :bytes 4096}
+   :severity :info})
+```
+
+Event names identify a stable event type; request IDs, object keys, and other
+high-cardinality values belong in sanitized attributes or the structured body.
 
 ## Export
 

@@ -38,8 +38,11 @@
 (defprotocol Logger
   (emit! [logger record]
     "Emit a log record. `record` may carry :body, :severity (a level keyword),
-    :severity-number, :severity-text, :attributes, :timestamp (nanos, when the
-    event happened) and :observed-timestamp (nanos, when it was collected).")
+    :severity-number, :severity-text, :event-name (a non-empty string for a
+    semantically named OTel Event), :attributes, :timestamp (nanos, when the
+    event happened) and :observed-timestamp (nanos, when it was collected).
+    Empty or non-string event names are ignored, leaving an ordinary log
+    record; telemetry input must not break the application emitting it.")
   (log-enabled? [logger level]
     "Whether a record at `level` would be recorded. Guard expensive message
     construction with it."))

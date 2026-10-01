@@ -205,6 +205,8 @@
            :severityNumber (or (:severity-number r) 0)
            :body (body-value (:body r))}
     (:severity-text r) (assoc :severityText (:severity-text r))
+    (and (string? (:event-name r)) (not (empty? (:event-name r))))
+    (assoc :eventName (:event-name r))
     ;; timeUnixNano is when the event happened; it is optional, and omitting it
     ;; tells the backend to fall back to the observed time rather than to 1970.
     (:timestamp-unix-nano r) (assoc :timeUnixNano (i64 (:timestamp-unix-nano r)))
