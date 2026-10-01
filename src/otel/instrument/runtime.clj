@@ -3,9 +3,9 @@
 
   Chez already maintains everything worth reporting — the collector's counters
   and two clocks — and jolt exposes them through `jolt.host`. This maps them onto
-  OpenTelemetry instruments following the `process.runtime.*` semantic
-  conventions, so a Jolt service shows up in a runtime dashboard next to JVM and
-  Go services rather than needing a bespoke one.
+  OpenTelemetry instruments. Runtime-specific measurements use the `jolt.*`
+  namespace; only measurements with matching standard semantics use standard
+  process or system names.
 
   Every instrument here is asynchronous. These are values that are cheap to read
   on demand and expensive to track continuously — there is no hook on each
@@ -15,8 +15,8 @@
   The instrument kinds are chosen from what each number actually is, which is
   where a runtime integration usually goes wrong:
 
-    heap usage             a gauge. It rises and falls with collection, and only
-                           the latest reading means anything.
+    heap usage             an up/down counter. It rises and falls with
+                           allocation and collection.
     collection count/time  monotonic counters. They only ever increase, so a
                            backend can turn them into a rate — collections per
                            second, or fraction of time spent collecting.
@@ -53,8 +53,8 @@
      ;; Live bytes: what survived the last collection plus what has been
      ;; allocated since. The number that answers "is this process leaking".
      (instrument #(jolt.host/bytes-allocated)
-       #(metrics/observable-gauge
-          meter "process.runtime.jolt.memory.heap"
+       #(metrics/observable-up-down-counter
+          meter "jolt.memory.used"
           (observe-value (fn [] (jolt.host/bytes-allocated)))
           {:unit "By" :description "Bytes currently allocated on the Chez heap"}))
 
@@ -62,21 +62,21 @@
      ;; collector has reserved but not handed out, so the gap between the two is
      ;; fragmentation and headroom rather than live data.
      (instrument #(jolt.host/current-memory-bytes)
-       #(metrics/observable-gauge
-          meter "process.runtime.jolt.memory.reserved"
+       #(metrics/observable-up-down-counter
+          meter "jolt.memory.committed"
           (observe-value (fn [] (jolt.host/current-memory-bytes)))
           {:unit "By" :description "Bytes obtained from the OS by the Chez allocator"}))
 
      (instrument #(jolt.host/maximum-memory-bytes)
        #(metrics/observable-gauge
-          meter "process.runtime.jolt.memory.reserved.peak"
+          meter "jolt.memory.committed.peak"
           (observe-value (fn [] (jolt.host/maximum-memory-bytes)))
           {:unit "By" :description "Peak bytes obtained from the OS by the Chez allocator"}))
 
      ;; --- garbage collection --------------------------------------------------
      (instrument #(jolt.host/gc-count)
        #(metrics/observable-counter
-          meter "process.runtime.jolt.gc.count"
+          meter "jolt.gc.count"
           (observe-value (fn [] (jolt.host/gc-count)))
           {:unit "{collection}" :description "Collections performed since process start"}))
 
@@ -84,38 +84,38 @@
      ;; the host counter is nanoseconds.
      (instrument #(jolt.host/gc-real-nanos)
        #(metrics/observable-counter
-          meter "process.runtime.jolt.gc.duration"
+          meter "jolt.gc.wall.time"
           (observe-value (fn [] (/ (double (jolt.host/gc-real-nanos)) 1e9)))
           {:unit "s" :description "Wall-clock time spent collecting since process start"}))
 
      (instrument #(jolt.host/gc-cpu-nanos)
        #(metrics/observable-counter
-          meter "process.runtime.jolt.gc.cpu.time"
+          meter "jolt.gc.cpu.time"
           (observe-value (fn [] (/ (double (jolt.host/gc-cpu-nanos)) 1e9)))
           {:unit "s" :description "CPU time spent collecting since process start"}))
 
      (instrument #(jolt.host/gc-bytes)
        #(metrics/observable-counter
-          meter "process.runtime.jolt.gc.reclaimed"
+          meter "jolt.gc.memory.reclaimed"
           (observe-value (fn [] (jolt.host/gc-bytes)))
           {:unit "By" :description "Bytes reclaimed by the collector since process start"}))
 
      ;; --- cpu -----------------------------------------------------------------
      (instrument #(jolt.host/cpu-nanos)
        #(metrics/observable-counter
-          meter "process.runtime.jolt.cpu.time"
+          meter "jolt.cpu.time"
           (observe-value (fn [] (/ (double (jolt.host/cpu-nanos)) 1e9)))
           {:unit "s" :description "CPU time consumed by the process"}))
 
      (instrument #(jolt.host/real-nanos)
-       #(metrics/observable-counter
-          meter "process.runtime.jolt.uptime"
+       #(metrics/observable-gauge
+          meter "process.uptime"
           (observe-value (fn [] (/ (double (jolt.host/real-nanos)) 1e9)))
           {:unit "s" :description "Wall-clock time since process start"}))
 
      ;; --- host ----------------------------------------------------------------
      (instrument #(jolt.host/available-processors)
-       #(metrics/observable-gauge
-          meter "system.cpu.logical.count"
+       #(metrics/observable-up-down-counter
+          meter "jolt.cpu.count"
           (observe-value (fn [] (jolt.host/available-processors)))
-          {:unit "{cpu}" :description "Logical CPUs visible to the process"}))]))
+          {:unit "{cpu}" :description "Processors available to the Jolt runtime"}))]))

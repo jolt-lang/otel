@@ -46,8 +46,8 @@
                        (mapcat :metrics)
                        (map :name)
                        set)]
-        (is (contains? names "process.runtime.jolt.memory.heap"))
-        (is (contains? names "process.runtime.jolt.gc.count"))))))
+        (is (contains? names "jolt.memory.used"))
+        (is (contains? names "jolt.gc.count"))))))
 
 (deftest runtime-metrics-can-be-turned-off
   (with-sdk {:runtime-metrics? false}

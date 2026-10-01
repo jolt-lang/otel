@@ -208,37 +208,102 @@
   (let [{:keys [provider meter]} (setup)]
     (runtime/register! meter)
     (let [by-name (into {} (map (juxt :name identity) (mapcat :metrics (sdk/collect! provider))))]
-      (testing "heap and reserved memory are gauges with live values"
-        (is (= :gauge (:type (get by-name "process.runtime.jolt.memory.heap"))))
-        (is (pos? (:value (point-for (get by-name "process.runtime.jolt.memory.heap") {}))))
-        (is (pos? (:value (point-for (get by-name "process.runtime.jolt.memory.reserved") {})))))
+      (testing "the exported surface is exactly the reviewed standard/custom mapping"
+        (is (= #{"jolt.memory.used"
+                 "jolt.memory.committed"
+                 "jolt.memory.committed.peak"
+                 "jolt.gc.count"
+                 "jolt.gc.wall.time"
+                 "jolt.gc.cpu.time"
+                 "jolt.gc.memory.reclaimed"
+                 "jolt.cpu.time"
+                 "process.uptime"
+                 "jolt.cpu.count"}
+               (set (keys by-name)))))
+      (testing "every kind, unit, and monotonicity matches the reviewed mapping"
+        (doseq [[name expected]
+                {"jolt.memory.used" {:type :sum :unit "By" :monotonic? false}
+                 "jolt.memory.committed" {:type :sum :unit "By" :monotonic? false}
+                 "jolt.memory.committed.peak" {:type :gauge :unit "By"}
+                 "jolt.gc.count" {:type :sum :unit "{collection}" :monotonic? true}
+                 "jolt.gc.wall.time" {:type :sum :unit "s" :monotonic? true}
+                 "jolt.gc.cpu.time" {:type :sum :unit "s" :monotonic? true}
+                 "jolt.gc.memory.reclaimed" {:type :sum :unit "By" :monotonic? true}
+                 "jolt.cpu.time" {:type :sum :unit "s" :monotonic? true}
+                 "process.uptime" {:type :gauge :unit "s"}
+                 "jolt.cpu.count" {:type :sum :unit "{cpu}" :monotonic? false}}]
+          (is (= expected (select-keys (get by-name name)
+                                       [:type :unit :monotonic?]))
+              name)))
+      (testing "live memory is a non-monotonic sum and peak memory is a gauge"
+        (doseq [name ["jolt.memory.used" "jolt.memory.committed"]]
+          (is (= :sum (:type (get by-name name))))
+          (is (false? (:monotonic? (get by-name name))))
+          (is (pos? (:value (point-for (get by-name name) {})))))
+        (is (= :gauge (:type (get by-name "jolt.memory.committed.peak")))))
       (testing "collection totals are monotonic counters, so a backend can rate them"
-        (let [gc (get by-name "process.runtime.jolt.gc.count")]
+        (let [gc (get by-name "jolt.gc.count")]
           (is (= :sum (:type gc)))
           (is (:monotonic? gc))
           (is (>= (:value (point-for gc {})) 0))))
       (testing "durations are reported in seconds, per the OTel conventions"
-        (is (= "s" (:unit (get by-name "process.runtime.jolt.gc.duration"))))
-        (is (>= (:value (point-for (get by-name "process.runtime.jolt.cpu.time") {})) 0.0)))
-      (testing "cpu count comes from the host"
-        (is (pos? (:value (point-for (get by-name "system.cpu.logical.count") {}))))))))
+        (is (= "s" (:unit (get by-name "jolt.gc.wall.time"))))
+        (is (>= (:value (point-for (get by-name "jolt.cpu.time") {})) 0.0))
+        (is (= :gauge (:type (get by-name "process.uptime"))))
+        (is (pos? (:value (point-for (get by-name "process.uptime") {})))))
+      (testing "runtime-visible cpu count is a non-monotonic sum"
+        (let [cpu-count (get by-name "jolt.cpu.count")]
+          (is (= :sum (:type cpu-count)))
+          (is (false? (:monotonic? cpu-count)))
+          (is (pos? (:value (point-for cpu-count {})))))))))
 
-;; Not "allocating makes the number go up": the gauge reports bytes live on the
+;; Not "allocating makes the number go up": the metric reports bytes live on the
 ;; Chez heap, so a collection between two reads can leave it lower than it
-;; started no matter what the test retains. What the gauge owes us is that each
+;; started no matter what the test retains. What the instrument owes us is that each
 ;; read reflects the host counter at that moment rather than a cached constant.
-(deftest runtime-heap-gauge-tracks-real-allocation
+(deftest runtime-memory-used-tracks-real-allocation
   (let [{:keys [provider meter]} (setup)
-        read-gauge #(:value (point-for (metric-named provider "process.runtime.jolt.memory.heap") {}))
-        ;; reading the gauge allocates, so allow a slack rather than equality
-        tracks? (fn [gauge host] (< (abs (- gauge host)) (max 2000000 (* 0.05 host))))]
+        read-memory #(:value (point-for (metric-named provider "jolt.memory.used") {}))
+        ;; reading the metric allocates, so allow a slack rather than equality
+        tracks? (fn [reading host] (< (abs (- reading host)) (max 2000000 (* 0.05 host))))]
     (runtime/register! meter)
     (let [host-1 (jolt.host/bytes-allocated)
-          gauge-1 (read-gauge)
+          reading-1 (read-memory)
           keep (into [] (map #(str "padpadpadpad" %) (range 100000)))
           host-2 (jolt.host/bytes-allocated)
-          gauge-2 (read-gauge)]
+          reading-2 (read-memory)]
       (is (= 100000 (count keep)))
-      (is (pos? gauge-1))
-      (is (tracks? gauge-1 host-1) "the gauge must report the host counter, not a constant")
-      (is (tracks? gauge-2 host-2) "and must re-read it on every collection"))))
+      (is (pos? reading-1))
+      (is (tracks? reading-1 host-1) "the metric must report the host counter, not a constant")
+      (is (tracks? reading-2 host-2) "and must re-read it on every collection")
+      (is (not= reading-1 reading-2) "retained allocation must change the live reading"))))
+
+(deftest runtime-counters-advance-after-real-work-and-collection
+  (let [{:keys [provider meter]} (setup)
+        read-point (fn [name]
+                     (:value (point-for (metric-named provider name) {})))]
+    (runtime/register! meter)
+    (let [gc-before (read-point "jolt.gc.count")
+          cpu-before (read-point "jolt.cpu.time")
+          uptime-before (read-point "process.uptime")
+          ;; Retain the result so this is real CPU/allocation work rather than a
+          ;; vacuous expression the compiler can discard.
+          work (reduce + (range 200000))]
+      (jolt.host/gc-full!)
+      (is (= 19999900000 work))
+      (is (> (read-point "jolt.gc.count") gc-before))
+      (is (> (read-point "jolt.cpu.time") cpu-before))
+      (is (> (read-point "process.uptime") uptime-before)))))
+
+(deftest unavailable-runtime-primitives-are-omitted-fail-open
+  (let [{:keys [provider meter]} (setup)]
+    (with-redefs [jolt.host/bytes-allocated
+                  (fn [] (throw (ex-info "unavailable" {})))]
+      (runtime/register! meter))
+    (let [names (->> (sdk/collect! provider)
+                     (mapcat :metrics)
+                     (map :name)
+                     set)]
+      (is (not (contains? names "jolt.memory.used")))
+      (is (contains? names "jolt.gc.count"))
+      (is (contains? names "process.uptime")))))

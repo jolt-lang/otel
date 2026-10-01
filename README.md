@@ -138,25 +138,49 @@ Chez Scheme already tracks everything worth reporting about the running process.
 `otel.instrument.runtime` maps it onto OpenTelemetry instruments, registered by
 default:
 
-| Instrument | Kind | Source |
-| --- | --- | --- |
-| `process.runtime.jolt.memory.heap` | gauge | `bytes-allocated` |
-| `process.runtime.jolt.memory.reserved{,.peak}` | gauge | `current/maximum-memory-bytes` |
-| `process.runtime.jolt.gc.count` | counter | `sstats-gc-count` |
-| `process.runtime.jolt.gc.duration` | counter | `sstats-gc-real` |
-| `process.runtime.jolt.gc.cpu.time` | counter | `sstats-gc-cpu` |
-| `process.runtime.jolt.gc.reclaimed` | counter | `sstats-gc-bytes` |
-| `process.runtime.jolt.cpu.time` | counter | `sstats-cpu` |
-| `process.runtime.jolt.uptime` | counter | `sstats-real` |
-| `system.cpu.logical.count` | gauge | host CPU count |
+| Instrument | Kind | Unit | Monotonic | Source | Status |
+| --- | --- | --- | --- | --- | --- |
+| `jolt.memory.used` | up/down counter | `By` | no | `bytes-allocated` | custom runtime |
+| `jolt.memory.committed` | up/down counter | `By` | no | `current-memory-bytes` | custom runtime |
+| `jolt.memory.committed.peak` | gauge | `By` | n/a | `maximum-memory-bytes` | custom runtime |
+| `jolt.gc.count` | counter | `{collection}` | yes | `gc-count` | custom runtime |
+| `jolt.gc.wall.time` | counter | `s` | yes | `gc-real-nanos` | custom runtime |
+| `jolt.gc.cpu.time` | counter | `s` | yes | `gc-cpu-nanos` | custom runtime |
+| `jolt.gc.memory.reclaimed` | counter | `By` | yes | `gc-bytes` | custom runtime |
+| `jolt.cpu.time` | counter | `s` | yes | `cpu-nanos` | custom runtime |
+| `process.uptime` | gauge | `s` | n/a | `real-nanos` | standard process |
+| `jolt.cpu.count` | up/down counter | `{cpu}` | no | `available-processors` | custom runtime |
 
 These are asynchronous instruments: their callbacks run once per collection, on
 the reader's thread, so nothing is tracked on the application's hot path.
+
+The `jolt.*` names are runtime-specific. In particular, Chez exposes total CPU
+time but not the `cpu.mode` dimension required by standard `process.cpu.time`,
+and its allocator totals are not operating-system RSS or virtual-memory values.
+`process.uptime` is used where the source matches the standard definition;
+runtime-visible processor count remains `jolt.cpu.count` rather than claiming
+the host-level `system.cpu.logical.count` definition. This naming replaces the earlier
+`process.runtime.jolt.*` instruments; dual emission would double series and
+make dashboards silently count the same measurement twice.
+
+The standard process metrics for RSS, virtual memory, CPU split by `cpu.mode`,
+threads, file descriptors, and disk/network I/O are intentionally not
+approximated from Chez allocator or aggregate CPU counters. They can be added
+when Jolt exposes portable primitives with those exact meanings. Runtime
+identity remains separate resource metadata under `process.runtime.name`,
+`process.runtime.version`, and `process.runtime.description`.
 
 The primitives behind them are exposed by jolt as `jolt.host/wall-nanos`,
 `mono-nanos`, `cpu-nanos`, `real-nanos`, `gc-count`, `gc-cpu-nanos`,
 `gc-real-nanos`, `gc-bytes`, `bytes-allocated`, `current-memory-bytes`,
 `maximum-memory-bytes`, `thread-id`, `scheme-version` and `machine-type`.
+`available-processors` supplies the runtime-visible CPU count.
+
+The reproducible collection-overhead harness is:
+
+```sh
+jolt bench/otel/runtime_metrics_benchmark.clj
+```
 
 ## Clocks
 
