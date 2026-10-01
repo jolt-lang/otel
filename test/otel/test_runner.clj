@@ -16,6 +16,7 @@
   '[otel.attributes-test
     otel.context-test
     otel.sdk.clock-test
+    otel.sdk.exemplar-test
     otel.sdk-test
     otel.sdk.logs-test
     otel.sdk.metrics-test

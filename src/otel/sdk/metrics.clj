@@ -17,6 +17,7 @@
             [otel.metrics :as api]
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
+            [otel.sdk.exemplar :as exemplar]
             [otel.sdk.export :as export]))
 
 (def default-boundaries
@@ -52,12 +53,84 @@
         (update :max (fn [m] (if (or (nil? m) (> v m)) v m)))
         (update-in [:bucket-counts i] inc))))
 
+(def default-exemplar-reservoir-size
+  "The default slot count for non-histogram exemplar reservoirs."
+  1)
+
+(defn- aggregate [current kind boundaries value]
+  (case kind
+    (:counter :up-down-counter) (+ (or current 0) value)
+    :gauge value
+    :histogram (record-histogram current boundaries value)))
+
+(defn- exemplar-enabled? [inst]
+  (and (nil? (:callback inst))
+       (not= :always-off (:exemplar-filter inst))))
+
+(defn- exemplar-cell? [cell]
+  (and (map? cell) (contains? cell ::aggregation)))
+
+(defn- aggregation-value [cell]
+  (if (exemplar-cell? cell) (::aggregation cell) cell))
+
+(defn- update-aggregation [cell kind boundaries value]
+  (let [next (aggregate (aggregation-value cell) kind boundaries value)]
+    (if (exemplar-cell? cell) (assoc cell ::aggregation next) next)))
+
+(defn- record-measurement!
+  "Atomically update a synchronous aggregation and its per-timeseries exemplar
+  reservoir. AlwaysOff retains the pre-exemplar cell shape and does not read the
+  current context, clock, or random source."
+  [inst value attributes]
+  (let [attributes (attr/normalize attributes)]
+    (if-not (exemplar-enabled? inst)
+      (swap! (:state inst) update attributes
+             aggregate (:kind inst) (:boundaries inst) value)
+      (let [eligible (exemplar/eligible-context (:exemplar-filter inst))]
+        (if-not eligible
+          ;; A rejected TraceBased measurement keeps the original aggregation
+          ;; cell shape. This is the overwhelmingly common no-span path and does
+          ;; not pay for an exemplar wrapper or reservoir.
+          (swap! (:state inst) update attributes
+                 update-aggregation (:kind inst) (:boundaries inst) value)
+          ;; The random draw cannot live inside swap!: its function may be retried
+          ;; after a failed CAS, which would make a state transition depend on an
+          ;; untracked side effect and bias concurrent sampling. Build the candidate
+          ;; outside compare-and-set! and redraw against the new serial position on
+          ;; a collision.
+          (loop []
+            (let [old @(:state inst)
+                  current (get old attributes)
+                  entry (if (exemplar-cell? current)
+                          (update-aggregation current (:kind inst) (:boundaries inst) value)
+                          {::aggregation (aggregate current (:kind inst)
+                                                    (:boundaries inst) value)})
+                  entry (update entry ::reservoir
+                                (fn [reservoir]
+                                  (exemplar/offer
+                                    (or reservoir
+                                        (exemplar/reservoir
+                                          (:kind inst)
+                                          (:boundaries inst)
+                                          (:exemplar-reservoir-size inst)))
+                                    value
+                                    eligible
+                                    attributes
+                                    attributes
+                                    (:clock inst)
+                                    (:exemplar-random inst))))
+                  new (assoc old attributes entry)]
+              (when-not (compare-and-set! (:state inst) old new)
+                (recur))))))))
+  inst)
+
 ;; --- instruments ------------------------------------------------------------
 
 ;; Every instrument is the same shape: a descriptor plus an atom of
 ;; attribute-set -> cell. The kind decides how a measurement folds into a cell
 ;; and how a cell is later rendered as a metric point.
-(defrecord SdkInstrument [kind name description unit boundaries monotonic? callback state clock]
+(defrecord SdkInstrument [kind name description unit boundaries monotonic? callback state clock
+                          exemplar-filter exemplar-reservoir-size exemplar-random]
   api/Counter
   (add! [this v] (api/add! this v {}))
   (add! [this v attrs]
@@ -68,26 +141,23 @@
       (binding [*out* *err*]
         (println "otel: ignoring negative add to counter" name)))
     (when-not (neg? v)
-      (swap! state update (attr/normalize attrs) (fnil + 0) v))
+      (record-measurement! this v attrs))
     this)
 
   api/UpDownCounter
   (add-delta! [this v] (api/add-delta! this v {}))
   (add-delta! [this v attrs]
-    (swap! state update (attr/normalize attrs) (fnil + 0) v)
-    this)
+    (record-measurement! this v attrs))
 
   api/Histogram
   (record! [this v] (api/record! this v {}))
   (record! [this v attrs]
-    (swap! state update (attr/normalize attrs) record-histogram boundaries v)
-    this)
+    (record-measurement! this v attrs))
 
   api/Gauge
   (set-value! [this v] (api/set-value! this v {}))
   (set-value! [this v attrs]
-    (swap! state assoc (attr/normalize attrs) v)
-    this))
+    (record-measurement! this v attrs)))
 
 (defrecord CollectingObserver [state]
   api/Observer
@@ -111,12 +181,49 @@
 
 ;; --- collection -------------------------------------------------------------
 
-(defn- point-common [attrs start now]
-  {:attributes attrs :start-time-unix-nano start :time-unix-nano now})
+(defn- point-common [attrs start now exemplars]
+  (cond-> {:attributes attrs :start-time-unix-nano start :time-unix-nano now}
+    (seq exemplars) (assoc :exemplars exemplars)))
+
+(defn- aggregation [inst cell]
+  (aggregation-value cell))
+
+(defn- collected-exemplars [inst cell]
+  (when (exemplar-enabled? inst)
+    (when (exemplar-cell? cell)
+      (some-> (::reservoir cell) exemplar/collect))))
+
+(defn- reset-reservoir [cell]
+  (if-let [reservoir (when (exemplar-cell? cell) (::reservoir cell))]
+    (assoc cell ::reservoir (exemplar/reset reservoir))
+    cell))
+
+(defn- snapshot-cells!
+  "Snapshot an instrument and advance aggregation and exemplar collection state
+  in one atom transition, so concurrent measurements cannot cross the two
+  collection boundaries differently."
+  [inst temporality]
+  (let [delta? (and (= :delta temporality) (nil? (:callback inst)))]
+    (cond
+      (exemplar-enabled? inst)
+      (first (swap-vals! (:state inst)
+                         (fn [cells]
+                           (if delta?
+                             {}
+                             (reduce-kv (fn [m attrs cell]
+                                          (assoc m attrs (reset-reservoir cell)))
+                                        {}
+                                        cells)))))
+
+      delta?
+      (first (swap-vals! (:state inst) (constantly {})))
+
+      :else
+      @(:state inst))))
 
 (defn- instrument->metric
   [inst start now temporality]
-  (let [cells @(:state inst)
+  (let [cells (snapshot-cells! inst temporality)
         base {:name (:name inst)
               :description (:description inst)
               :unit (:unit inst)}]
@@ -129,15 +236,23 @@
              ;; temporality is always cumulative regardless of configuration —
              ;; there is no delta to compute from a single observation.
              :temporality (if (:callback inst) :cumulative temporality)
-             :data-points (mapv (fn [[attrs v]] (assoc (point-common attrs start now) :value v)) cells))
+             :data-points (mapv (fn [[attrs cell]]
+                                  (assoc (point-common attrs start now
+                                                       (collected-exemplars inst cell))
+                                         :value (aggregation inst cell)))
+                                cells))
 
       (:gauge :observable-gauge)
       (assoc base
              :type :gauge
-             :data-points (mapv (fn [[attrs v]]
+             :data-points (mapv (fn [[attrs cell]]
                                   ;; A gauge point has no start time: it describes
                                   ;; an instant, not an interval.
-                                  {:attributes attrs :time-unix-nano now :value v})
+                                  (let [exemplars (collected-exemplars inst cell)]
+                                    (cond-> {:attributes attrs
+                                             :time-unix-nano now
+                                             :value (aggregation inst cell)}
+                                      (seq exemplars) (assoc :exemplars exemplars))))
                                 cells))
 
       :histogram
@@ -145,21 +260,16 @@
              :type :histogram
              :temporality temporality
              :explicit-bounds (:boundaries inst)
-             :data-points (mapv (fn [[attrs c]]
-                                  (assoc (point-common attrs start now)
-                                         :count (:count c)
-                                         :sum (:sum c)
-                                         :min (:min c)
-                                         :max (:max c)
-                                         :bucket-counts (:bucket-counts c)))
+             :data-points (mapv (fn [[attrs cell]]
+                                  (let [c (aggregation inst cell)]
+                                    (assoc (point-common attrs start now
+                                                         (collected-exemplars inst cell))
+                                           :count (:count c)
+                                           :sum (:sum c)
+                                           :min (:min c)
+                                           :max (:max c)
+                                           :bucket-counts (:bucket-counts c))))
                                 cells)))))
-
-(defn- reset-for-delta! [inst]
-  ;; Delta temporality reports what happened since the last collection, so the
-  ;; cells start again from empty. Asynchronous instruments are left alone: they
-  ;; are rebuilt from their callback on every collection anyway.
-  (when-not (:callback inst)
-    (reset! (:state inst) {})))
 
 ;; --- meter and provider -----------------------------------------------------
 
@@ -170,11 +280,14 @@
                               (contains? #{:counter :observable-counter} kind)
                               callback
                               (atom {})
-                              (:clock meter))]
+                              (:clock meter)
+                              (:exemplar-filter meter)
+                              (:exemplar-reservoir-size meter)
+                              (:exemplar-random meter))]
     (swap! (:instruments meter) conj inst)
     inst))
 
-(defrecord SdkMeter [scope instruments clock]
+(defrecord SdkMeter [scope instruments clock exemplar-filter exemplar-reservoir-size exemplar-random]
   api/Meter
   (counter [m nm] (api/counter m nm {}))
   (counter [m nm opts] (register! m :counter nm opts nil))
@@ -191,28 +304,43 @@
   (observable-gauge [m nm cb] (api/observable-gauge m nm cb {}))
   (observable-gauge [m nm cb opts] (register! m :observable-gauge nm opts cb)))
 
-(defrecord SdkMeterProvider [resource meters clock start-time temporality state])
+(defrecord SdkMeterProvider [resource meters clock start-time temporality state
+                             exemplar-filter exemplar-reservoir-size exemplar-random])
 
 (defn meter-provider
   "Build a meter provider.
 
-  Options: :resource, :clock, and :temporality (:cumulative, the default, or
-  :delta)."
-  [{:keys [resource clock temporality]}]
-  (let [c (clock/anchored (or clock clock/system))]
+  Options: :resource, :clock, :temporality (:cumulative, the default, or
+  :delta), :exemplar-filter (:trace-based, :always-on, or :always-off),
+  :exemplar-reservoir-size for non-histogram streams, and :exemplar-random for
+  deterministic testing."
+  [{:keys [resource clock temporality exemplar-filter exemplar-reservoir-size
+           exemplar-random]}]
+  (let [c (clock/anchored (or clock clock/system))
+        filter (exemplar/check-filter (or exemplar-filter :trace-based))
+        reservoir-size (or exemplar-reservoir-size default-exemplar-reservoir-size)]
+    (when-not (and (integer? reservoir-size) (pos? reservoir-size))
+      (throw (ex-info ":exemplar-reservoir-size must be a positive integer"
+                      {:exemplar-reservoir-size reservoir-size})))
     (->SdkMeterProvider (or resource (res/default-resource))
                         (atom [])
                         c
                         (clock/wall-nanos c)
                         (or temporality :cumulative)
-                        (atom {:shutdown? false}))))
+                        (atom {:shutdown? false})
+                        filter
+                        reservoir-size
+                        (or exemplar-random rand-int))))
 
 (defn get-meter
   "A meter for one instrumentation scope."
   [provider {:keys [name version schema-url]}]
   (let [m (->SdkMeter {:name name :version version :schema-url schema-url}
                       (atom [])
-                      (:clock provider))]
+                      (:clock provider)
+                      (:exemplar-filter provider)
+                      (:exemplar-reservoir-size provider)
+                      (:exemplar-random provider))]
     (swap! (:meters provider) conj m)
     m))
 
@@ -236,9 +364,7 @@
                     (for [inst insts]
                       (do
                         (when (:callback inst) (observe-async! inst))
-                        (let [m (instrument->metric inst start now temporality)]
-                          (when (= :delta temporality) (reset-for-delta! inst))
-                          m))))}))))
+                        (instrument->metric inst start now temporality))))}))))
 
 (defn shutdown!
   "Stop the provider. Collection after this returns nothing."

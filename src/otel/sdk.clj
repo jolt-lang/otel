@@ -90,6 +90,15 @@
 (defn- env-sampler []
   (sampler/from-config (env "OTEL_TRACES_SAMPLER") (env "OTEL_TRACES_SAMPLER_ARG")))
 
+(defn- env-exemplar-filter []
+  (when-let [configured (some-> (env "OTEL_METRICS_EXEMPLAR_FILTER")
+                                str/trim
+                                str/lower-case)]
+    (get {"always_on" :always-on
+          "always_off" :always-off
+          "trace_based" :trace-based}
+         configured)))
+
 (defn- disabled? []
   (= "true" (some-> (env "OTEL_SDK_DISABLED") str/trim str/lower-case)))
 
@@ -153,6 +162,8 @@
     :metrics?         collect metrics (default true)
     :runtime-metrics? register the Chez runtime instruments (default true)
     :metric-interval-ms  metric collection period (default 60000)
+    :exemplar-filter   :trace-based (default), :always-on, or :always-off
+                       (OTEL_METRICS_EXEMPLAR_FILTER)
     :logs?            emit the logs signal (default false)
     :bridge-logging?  route clojure.tools.logging through it (default true when
                       :logs? is on) -- additive, the existing backend keeps working
@@ -186,7 +197,11 @@
                                            :limits (:limits opts)})
            mp (when metrics?
                 (sdk-metrics/meter-provider {:resource base
-                                             :temporality (:temporality opts)}))
+                                             :temporality (:temporality opts)
+                                             :exemplar-filter (or (:exemplar-filter opts)
+                                                                  (env-exemplar-filter)
+                                                                  :trace-based)
+                                             :exemplar-reservoir-size (:exemplar-reservoir-size opts)}))
            metric-exporter (when mp (build-metric-exporter exporter
                                                            (select-keys opts [:endpoint :headers :metrics-url :timeout-ms])))
            reader (when metric-exporter

@@ -54,6 +54,31 @@
     (fn [handle]
       (is (empty? (mapcat :metrics (sdk-metrics/collect! (:meter-provider handle))))))))
 
+(deftest init-passes-exemplar-configuration-to-the-meter-provider
+  (with-sdk {:runtime-metrics? false
+             :exemplar-filter :always-off
+             :exemplar-reservoir-size 3}
+    (fn [handle]
+      (let [provider (:meter-provider handle)]
+        (is (= :always-off (:exemplar-filter provider)))
+        (is (= 3 (:exemplar-reservoir-size provider)))))))
+
+(deftest init-reads-the-standard-exemplar-filter-environment-variable
+  (with-redefs [jolt.host/getenv (fn [name]
+                                  (when (= "OTEL_METRICS_EXEMPLAR_FILTER" name)
+                                    "always_off"))]
+    (with-sdk {:runtime-metrics? false}
+      (fn [handle]
+        (is (= :always-off
+               (:exemplar-filter (:meter-provider handle))))))))
+
+(deftest explicit-exemplar-filter-overrides-the-environment
+  (with-redefs [jolt.host/getenv (constantly "always_off")]
+    (with-sdk {:runtime-metrics? false :exemplar-filter :always-on}
+      (fn [handle]
+        (is (= :always-on
+               (:exemplar-filter (:meter-provider handle))))))))
+
 (deftest metrics-can-be-turned-off-entirely
   (with-sdk {:metrics? false}
     (fn [handle]

@@ -4,21 +4,36 @@
             [otel.metrics :as api]
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
-            [otel.sdk.metrics :as sdk]))
+            [otel.sdk.metrics :as sdk]
+            [otel.trace :as trace]))
 
 (defn- setup
   ([] (setup {}))
   ([opts]
-   (let [provider (sdk/meter-provider (merge {:resource res/empty-resource
-                                              :clock (clock/fake-clock {:wall 1000 :mono 0})}
+   (let [c (or (:clock opts) (clock/fake-clock {:wall 1000 :mono 0}))
+         provider (sdk/meter-provider (merge {:resource res/empty-resource
+                                              :clock c}
                                              opts))]
-     {:provider provider :meter (sdk/get-meter provider {:name "test"})})))
+     {:provider provider :meter (sdk/get-meter provider {:name "test"}) :clock c})))
 
 (defn- metric-named [provider nm]
   (->> (sdk/collect! provider) (mapcat :metrics) (filter #(= nm (:name %))) first))
 
 (defn- point-for [metric attrs]
   (first (filter #(= attrs (:attributes %)) (:data-points metric))))
+
+(def sampled-context
+  (trace/span-context {:trace-id "11111111111111111111111111111111"
+                       :span-id "2222222222222222"
+                       :sampled? true}))
+
+(def unsampled-context
+  (trace/span-context {:trace-id "33333333333333333333333333333333"
+                       :span-id "4444444444444444"
+                       :sampled? false}))
+
+(defn- with-span-context [span-context f]
+  (trace/with-current-span (trace/non-recording-span span-context) (f)))
 
 ;; --- counters ---------------------------------------------------------------
 
@@ -105,6 +120,139 @@
     (api/record! h 1)
     (is (= sdk/default-boundaries (:explicit-bounds (metric-named provider "h"))))))
 
+;; --- exemplars --------------------------------------------------------------
+
+(deftest trace-based-is-the-default-exemplar-filter
+  (let [{:keys [provider meter clock]} (setup)
+        c (api/counter meter "requests")]
+    (api/add! c 1)
+    (is (nil? (:exemplars (point-for (metric-named provider "requests") {})))
+        "a measurement outside a sampled span is ineligible")
+    (clock/advance! clock {:mono 23})
+    (with-span-context sampled-context #(api/add! c 2))
+    (let [[e] (:exemplars (point-for (metric-named provider "requests") {}))]
+      (is (= 2 (:value e)))
+      (is (= 1023 (:time-unix-nano e)))
+      (is (= (:trace-id sampled-context) (:trace-id e)))
+      (is (= (:span-id sampled-context) (:span-id e)))
+      (is (= {} (or (:filtered-attributes e) {}))))))
+
+(deftest trace-based-rejects-an-unsampled-valid-span
+  (let [{:keys [provider meter]} (setup)
+        c (api/counter meter "requests")]
+    (with-span-context unsampled-context #(api/add! c 1))
+    (is (nil? (:exemplars (point-for (metric-named provider "requests") {}))))))
+
+(deftest always-on-samples-without-a-span-but-omits-invalid-ids
+  (let [{:keys [provider meter]} (setup {:exemplar-filter :always-on})
+        g (api/gauge meter "temperature")]
+    (api/set-value! g 21.5)
+    (let [[e] (:exemplars (point-for (metric-named provider "temperature") {}))]
+      (is (= 21.5 (:value e)))
+      (is (nil? (:trace-id e)))
+      (is (nil? (:span-id e))))))
+
+(deftest always-off-does-no-sampling-work
+  (let [random-called? (atom false)
+        {:keys [provider meter]}
+        (setup {:exemplar-filter :always-off
+                :exemplar-random (fn [_] (reset! random-called? true) 0)})
+        c (api/counter meter "requests")]
+    (with-span-context sampled-context #(api/add! c 1))
+    (is (= 1 (:value (point-for (metric-named provider "requests") {}))))
+    (is (nil? (:exemplars (point-for (metric-named provider "requests") {}))))
+    (is (false? @random-called?))))
+
+(deftest every-timeseries-has-an-independent-reservoir
+  (let [{:keys [provider meter]} (setup)
+        c (api/counter meter "requests")]
+    (with-span-context sampled-context
+      #(do (api/add! c 1 {:route "/a"})
+           (api/add! c 2 {:route "/b"})))
+    (let [m (metric-named provider "requests")]
+      (is (= [1] (mapv :value (:exemplars (point-for m {"route" "/a"})))))
+      (is (= [2] (mapv :value (:exemplars (point-for m {"route" "/b"}))))))))
+
+(deftest histogram-exemplars-align-with-explicit-buckets
+  (let [{:keys [provider meter]}
+        (setup {:exemplar-filter :always-on :exemplar-random (constantly 0)})
+        h (api/histogram meter "latency" {:boundaries [10.0 100.0]})]
+    (doseq [v [1 5 50 500]] (api/record! h v))
+    (is (= [5 50 500]
+           (mapv :value (:exemplars (point-for (metric-named provider "latency") {})))))))
+
+(deftest sum-gauge-and-histogram-points-carry-exemplars
+  (let [{:keys [provider meter]} (setup {:exemplar-filter :always-on})
+        c (api/counter meter "sum")
+        g (api/gauge meter "gauge")
+        h (api/histogram meter "histogram")]
+    (api/add! c 1)
+    (api/set-value! g 2)
+    (api/record! h 3)
+    (let [by-name (into {} (map (juxt :name identity) (mapcat :metrics (sdk/collect! provider))))]
+      (is (= [1] (mapv :value (:exemplars (point-for (get by-name "sum") {})))))
+      (is (= [2] (mapv :value (:exemplars (point-for (get by-name "gauge") {})))))
+      (is (= [3] (mapv :value (:exemplars (point-for (get by-name "histogram") {}))))))))
+
+(deftest exemplars-reset-after-every-collection-cycle
+  (let [{:keys [provider meter]} (setup {:exemplar-filter :always-on})
+        c (api/counter meter "requests")]
+    (api/add! c 1)
+    (is (= [1] (mapv :value (:exemplars (point-for (metric-named provider "requests") {})))))
+    (testing "the cumulative aggregate remains but its old exemplar does not"
+      (let [p (point-for (metric-named provider "requests") {})]
+        (is (= 1 (:value p)))
+        (is (nil? (:exemplars p)))))))
+
+(deftest delta-collection-resets-aggregation-and-exemplars-together
+  (let [{:keys [provider meter]}
+        (setup {:temporality :delta :exemplar-filter :always-on})
+        c (api/counter meter "requests")]
+    (api/add! c 3)
+    (let [p (point-for (metric-named provider "requests") {})]
+      (is (= 3 (:value p)))
+      (is (= [3] (mapv :value (:exemplars p)))))
+    (is (nil? (point-for (metric-named provider "requests") {})))
+    (api/add! c 2)
+    (let [p (point-for (metric-named provider "requests") {})]
+      (is (= 2 (:value p)))
+      (is (= [2] (mapv :value (:exemplars p)))))))
+
+(deftest always-off-delta-snapshot-joins-a-concurrent-measurement-atomically
+  (let [{:keys [provider meter]}
+        (setup {:temporality :delta :exemplar-filter :always-off})
+        c (api/counter meter "requests")
+        injected? (atom false)]
+    (api/add! c 3)
+    ;; Inject one writer after snapshot has computed its reset value but before
+    ;; its CAS. A deref followed by reset! loses this measurement; swap-vals!
+    ;; retries and joins it into the epoch being collected.
+    (set-validator! (:state c)
+                    (fn [new-state]
+                      (when (and (empty? new-state)
+                                 (compare-and-set! injected? false true))
+                        (api/add! c 7))
+                      true))
+    (let [p (point-for (metric-named provider "requests") {})]
+      (is @injected? "the controlled competing writer must run")
+      (is (= 10 (:value p)) "the measurement must belong to the collected epoch"))
+    (is (nil? (point-for (metric-named provider "requests") {})))))
+
+(deftest invalid-exemplar-configuration-fails-before-instrument-creation
+  (is (thrown? Exception (setup {:exemplar-filter :sometimes})))
+  (is (thrown? Exception (setup {:exemplar-reservoir-size 0}))))
+
+(deftest concurrent-recording-keeps-aggregation-and-reservoir-bounded
+  (let [{:keys [provider meter]}
+        (setup {:exemplar-filter :always-on :exemplar-reservoir-size 4})
+        c (api/counter meter "requests")
+        workers (mapv (fn [n] (future (api/add! c n))) (range 1 101))]
+    (doseq [worker workers] @worker)
+    (let [p (point-for (metric-named provider "requests") {})]
+      (is (= 5050 (:value p)))
+      (is (= 4 (count (:exemplars p))))
+      (is (every? #(<= 1 (:value %) 100) (:exemplars p))))))
+
 ;; --- asynchronous instruments -----------------------------------------------
 
 (deftest observable-gauge-reads-on-collection
@@ -115,6 +263,11 @@
     (reset! current 9)
     (testing "the callback runs again on the next collection"
       (is (= 9 (:value (point-for (metric-named provider "heap") {})))))))
+
+(deftest asynchronous-instruments-do-not-produce-exemplars
+  (let [{:keys [provider meter]} (setup {:exemplar-filter :always-on})]
+    (api/observable-gauge meter "heap" (fn [obs] (api/observe! obs 7)))
+    (is (nil? (:exemplars (point-for (metric-named provider "heap") {}))))))
 
 (deftest observable-counter-is-a-monotonic-sum
   (let [{:keys [provider meter]} (setup)]

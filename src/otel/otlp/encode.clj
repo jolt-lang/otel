@@ -14,7 +14,8 @@
   Spans are grouped resource -> scope -> spans, which is also the compression the
   format is designed around: the resource is written once per batch rather than
   once per span."
-  (:require [otel.resource :as res]))
+  (:require [otel.id :as id]
+            [otel.resource :as res]))
 
 ;; --- primitives -------------------------------------------------------------
 
@@ -136,11 +137,34 @@
   [v]
   (if (integer? v) {:asInt (i64 v)} {:asDouble (double v)}))
 
+(defn- exemplar->otlp [e]
+  (when-not (and (integer? (:time-unix-nano e))
+                 (not (neg? (:time-unix-nano e))))
+    (throw (ex-info "an exemplar requires a non-negative integer :time-unix-nano"
+                    {:exemplar e})))
+  (when-not (number? (:value e))
+    (throw (ex-info "an exemplar requires one numeric :value" {:exemplar e})))
+  (when (not= (some? (:trace-id e)) (some? (:span-id e)))
+    (throw (ex-info "an exemplar trace-id and span-id must be present together"
+                    {:exemplar e})))
+  (when (and (:trace-id e)
+             (not (and (id/valid-trace-id? (:trace-id e))
+                       (id/valid-span-id? (:span-id e)))))
+    (throw (ex-info "an exemplar requires valid trace-id and span-id values"
+                    {:exemplar e})))
+  (cond-> (merge {:timeUnixNano (i64 (:time-unix-nano e))}
+                 (number-value (:value e)))
+    (seq (:filtered-attributes e))
+    (assoc :filteredAttributes (key-values (:filtered-attributes e)))
+    (:trace-id e) (assoc :traceId (:trace-id e))
+    (:span-id e) (assoc :spanId (:span-id e))))
+
 (defn- number-point [p]
   (cond-> (merge {:timeUnixNano (i64 (:time-unix-nano p))}
                  (number-value (:value p)))
     (:start-time-unix-nano p) (assoc :startTimeUnixNano (i64 (:start-time-unix-nano p)))
-    (seq (:attributes p)) (assoc :attributes (key-values (:attributes p)))))
+    (seq (:attributes p)) (assoc :attributes (key-values (:attributes p)))
+    (seq (:exemplars p)) (assoc :exemplars (mapv exemplar->otlp (:exemplars p)))))
 
 (defn- histogram-point [bounds p]
   (cond-> {:startTimeUnixNano (i64 (:start-time-unix-nano p))
@@ -150,6 +174,7 @@
            :bucketCounts (mapv i64 (:bucket-counts p))
            :explicitBounds (mapv double bounds)}
     (seq (:attributes p)) (assoc :attributes (key-values (:attributes p)))
+    (seq (:exemplars p)) (assoc :exemplars (mapv exemplar->otlp (:exemplars p)))
     (some? (:min p)) (assoc :min (double (:min p)))
     (some? (:max p)) (assoc :max (double (:max p)))))
 

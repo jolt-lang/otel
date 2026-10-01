@@ -163,3 +163,72 @@
         (is (not (str/includes? s "unset"))))
       (testing "timestamps are quoted, so no precision is lost to a JSON double"
         (is (re-find #"\"startTimeUnixNano\":\"\d{19}\"" s))))))
+
+;; --- metric exemplar encoding ----------------------------------------------
+
+(def exemplar
+  {:filtered-attributes {"request.id" "r-1"}
+   :time-unix-nano 123
+   :value 7
+   :trace-id "11111111111111111111111111111111"
+   :span-id "2222222222222222"})
+
+(deftest encodes-number-point-exemplars
+  (let [m (enc/metric->otlp
+            {:name "requests"
+             :type :sum
+             :temporality :cumulative
+             :monotonic? true
+             :data-points [{:attributes {}
+                            :start-time-unix-nano 1
+                            :time-unix-nano 200
+                            :value 7
+                            :exemplars [exemplar]}]})
+        e (-> m :sum :dataPoints first :exemplars first)]
+    (is (= "123" (:timeUnixNano e)))
+    (is (= "7" (:asInt e)))
+    (is (nil? (:asDouble e)))
+    (is (= [{:key "request.id" :value {:stringValue "r-1"}}]
+           (:filteredAttributes e)))
+    (is (= (:trace-id exemplar) (:traceId e)))
+    (is (= (:span-id exemplar) (:spanId e)))
+    (let [wire (json/write-str m)]
+      (is (str/includes? wire "\"exemplars\""))
+      (is (str/includes? wire "\"filteredAttributes\""))
+      (is (str/includes? wire "\"traceId\":\"11111111111111111111111111111111\"")))))
+
+(deftest encodes-gauge-and-histogram-exemplar-values
+  (let [gauge (enc/metric->otlp
+                {:name "temperature" :type :gauge
+                 :data-points [{:attributes {} :time-unix-nano 200 :value 1.5
+                                :exemplars [(assoc exemplar :value 1.5)]}]})
+        histogram (enc/metric->otlp
+                    {:name "latency" :type :histogram :temporality :delta
+                     :explicit-bounds [10.0]
+                     :data-points [{:attributes {} :start-time-unix-nano 1
+                                    :time-unix-nano 200 :count 1 :sum 50.0
+                                    :min 50.0 :max 50.0 :bucket-counts [0 1]
+                                    :exemplars [(assoc exemplar :value 50.0)]}]})]
+    (is (= 1.5 (-> gauge :gauge :dataPoints first :exemplars first :asDouble)))
+    (is (= 50.0 (-> histogram :histogram :dataPoints first :exemplars first :asDouble)))))
+
+(deftest omits-an-empty-exemplar-list
+  (let [point (-> (enc/metric->otlp
+                    {:name "requests" :type :sum :temporality :cumulative
+                     :monotonic? true
+                     :data-points [{:attributes {} :start-time-unix-nano 1
+                                    :time-unix-nano 2 :value 1 :exemplars []}]})
+                  :sum :dataPoints first)]
+    (is (not (contains? point :exemplars)))))
+
+(deftest rejects-malformed-canonical-exemplars
+  (let [encode (fn [e]
+                 (enc/metric->otlp
+                   {:name "requests" :type :sum :temporality :cumulative
+                    :monotonic? true
+                    :data-points [{:attributes {} :start-time-unix-nano 1
+                                   :time-unix-nano 2 :value 1 :exemplars [e]}]}))]
+    (is (thrown? Exception (encode (dissoc exemplar :value))))
+    (is (thrown? Exception (encode (assoc exemplar :time-unix-nano -1))))
+    (is (thrown? Exception (encode (assoc exemplar :trace-id "bad"))))
+    (is (thrown? Exception (encode (dissoc exemplar :span-id))))))

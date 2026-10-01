@@ -74,7 +74,13 @@
   [s n]
   (and (string? s)
        (= n (count s))
-       (every? (fn [c] (>= (.indexOf hex-chars (str c)) 0)) s)))
+       (loop [i 0]
+         (if (= i n)
+           true
+           (let [c (int (.charAt s i))]
+             (when (or (<= 48 c 57)   ; 0-9
+                       (<= 97 c 102)) ; a-f
+               (recur (inc i))))))))
 
 (defn valid-trace-id?
   "True for 32 lowercase hex characters other than the reserved all-zero id."

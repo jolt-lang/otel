@@ -76,6 +76,23 @@ Metrics work the same way:
 (metrics/record! latency 42.0 {:route "/cart"})
 ```
 
+Synchronous measurements made inside a sampled span may carry a bounded
+exemplar linking that metric point back to the trace and span. The default
+TraceBased filter records only sampled contexts; configure
+`OTEL_METRICS_EXEMPLAR_FILTER=always_on`, `always_off`, or `trace_based`, or pass
+the corresponding `:exemplar-filter` keyword to `sdk/init!`.
+
+Explicit-bucket histograms retain at most one exemplar per bucket. Other
+aggregations use a uniformly sampled fixed-size reservoir per timeseries
+(default one slot, configurable with `:exemplar-reservoir-size`). Reservoirs
+reset on every collection cycle while cumulative metric totals remain
+cumulative. AlwaysOff bypasses context, timestamp, reservoir, and random-sample
+work entirely.
+
+Attributes removed from a future metric view may appear as exemplar filtered
+attributes. Treat exemplar sampling as another telemetry export path for
+sensitive data; use AlwaysOff if that is not acceptable.
+
 ### Without an SDK
 
 Every API operation has a working no-op, so a library can instrument itself
@@ -119,6 +136,8 @@ so nothing sensitive belongs in it.
 | `:processor` | — | `:batch` (also `:simple`) |
 | `:metrics?` / `:runtime-metrics?` | — | true |
 | `:metric-interval-ms` | — | 60000 |
+| `:exemplar-filter` | `OTEL_METRICS_EXEMPLAR_FILTER` | `:trace-based` |
+| `:exemplar-reservoir-size` | — | 1 |
 | `:logs?` / `:bridge-logging?` | — | false / true |
 | `:insecure?` | — | false (skip TLS verification) |
 | — | `OTEL_SDK_DISABLED=true` | installs nothing |
