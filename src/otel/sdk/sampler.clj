@@ -83,7 +83,10 @@
   them as signed (rather than unsigned) matches the reference SDKs, so the same
   trace id decides identically in a Java, Go or Jolt service."
   [trace-id]
-  (let [v (Long/parseLong (subs trace-id 16 32) 16)]
+  ;; Parsed as two 32-bit halves: Long/parseLong rejects 16 hex digits above
+  ;; Long/MAX_VALUE, which is half of all trace ids.
+  (let [v (+ (* (Long/parseLong (subs trace-id 16 24) 16) 4294967296)
+             (Long/parseLong (subs trace-id 24 32) 16))]
     (if (>= v two-63) (- v two-64) v)))
 
 (defrecord TraceIdRatio [ratio upper-bound]
