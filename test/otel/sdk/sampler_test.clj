@@ -41,6 +41,19 @@
           (is (= :record-and-sample (:decision (sampler/should-sample on (params {:trace-id t})))))
           (is (= :drop (:decision (sampler/should-sample off (params {:trace-id t}))))))))))
 
+(deftest ratio-sampler-reads-trace-ids-with-the-high-bit-set
+  (testing "the low 64 bits are read as signed, so ids at or above 2^63 must
+            parse rather than overflow"
+    (let [decide (fn [ratio low]
+                   (:decision (sampler/should-sample
+                                (sampler/trace-id-ratio ratio)
+                                (params {:trace-id (str "0123456789abcdef" low)}))))]
+      ;; -1: the smallest magnitude there is, kept by any non-zero ratio
+      (is (= :record-and-sample (decide 0.01 "ffffffffffffffff")))
+      ;; Long/MIN_VALUE: magnitude 2^63, kept only at 1.0
+      (is (= :record-and-sample (decide 1.0 "8000000000000000")))
+      (is (= :drop (decide 0.99 "8000000000000000"))))))
+
 (deftest ratio-sampler-is-approximately-the-ratio
   (let [s (sampler/trace-id-ratio 0.25)
         n 4000
