@@ -34,7 +34,7 @@ duration wrong in a way nothing downstream could detect.
 
 ```clojure
 ;; deps.edn
-{:deps {io.github.jolt-lang/otel {:git/tag "v0.1.0" :git/sha "bbbf33d"}}}
+{:deps {io.github.jolt-lang/otel {:git/tag "v0.2.0" :git/sha "049c039"}}}
 ```
 
 A `:git/sha` must be the full 40-character sha, or a prefix alongside a
