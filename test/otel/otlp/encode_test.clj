@@ -232,3 +232,13 @@
     (is (thrown? Exception (encode (assoc exemplar :time-unix-nano -1))))
     (is (thrown? Exception (encode (assoc exemplar :trace-id "bad"))))
     (is (thrown? Exception (encode (dissoc exemplar :span-id))))))
+
+(deftest omits-an-absent-histogram-sum
+  (let [point (-> (enc/metric->otlp
+                    {:name "latency" :type :histogram :temporality :delta
+                     :explicit-bounds [10.0]
+                     :data-points [{:attributes {} :start-time-unix-nano 1
+                                    :time-unix-nano 2 :count 1 :bucket-counts [1 0]}]})
+                  :histogram :dataPoints first)]
+    (is (not (contains? point :sum)))
+    (is (= "1" (:count point)))))

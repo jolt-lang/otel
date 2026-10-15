@@ -170,11 +170,13 @@
   (cond-> {:startTimeUnixNano (i64 (:start-time-unix-nano p))
            :timeUnixNano (i64 (:time-unix-nano p))
            :count (i64 (:count p))
-           :sum (double (:sum p))
            :bucketCounts (mapv i64 (:bucket-counts p))
            :explicitBounds (mapv double bounds)}
     (seq (:attributes p)) (assoc :attributes (key-values (:attributes p)))
     (seq (:exemplars p)) (assoc :exemplars (mapv exemplar->otlp (:exemplars p)))
+    ;; sum is optional in the proto: a histogram that saw negative values may
+    ;; omit it rather than report one that is meaningless for its unit.
+    (some? (:sum p)) (assoc :sum (double (:sum p)))
     (some? (:min p)) (assoc :min (double (:min p)))
     (some? (:max p)) (assoc :max (double (:max p)))))
 
