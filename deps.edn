@@ -12,7 +12,16 @@
         jolt-lang/jolt-crypto {:git/url "https://github.com/jolt-lang/jolt-crypto"
                                :git/sha "44da69bad08a2fd7631bd4061e3fb53938dafff6"}
         org.clojure/tools.logging {:git/url "https://github.com/jolt-lang/logging"
-                                   :git/sha "ec6747e55583118d881faf4ab41e68d7e587ce4c"}}
+                                   :git/sha "ec6747e55583118d881faf4ab41e68d7e587ce4c"}
+        ;; Reading OTLP/JSON (otel.otlp.decode). data.json names
+        ;; java.time.format.DateTimeFormatter as it loads, which jolt core does not
+        ;; carry; jolt-lang/time provides it.
+        org.clojure/data.json {:git/url "https://github.com/clojure/data.json"
+                               :git/tag "v2.5.2"
+                               :git/sha "1fce9070ee851f49a6c4ce6e1c0bb0db4d7594a0"}
+        jolt-lang/time {:git/url "https://github.com/jolt-lang/time"
+                        :git/tag "v0.0.10"
+                        :git/sha "faff43aa3260bf79bb3fba10f6d9336190f83281"}}
 
  :aliases {:test {:extra-paths ["test"]}}
 

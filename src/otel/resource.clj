@@ -14,7 +14,7 @@
 
 (def sdk-version
   "This library's version, reported as telemetry.sdk.version."
-  "0.1.0")
+  "0.3.0")
 
 (defrecord Resource [attributes schema-url])
 

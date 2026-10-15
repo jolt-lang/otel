@@ -24,6 +24,7 @@
     otel.sdk.tracer-test
     otel.id-test
     otel.exporter.otlp-test
+    otel.otlp.decode-test
     otel.otlp.encode-test
     otel.propagation-test
     otel.resource-test

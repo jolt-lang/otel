@@ -16,8 +16,10 @@ correlates log lines with the span they were written inside.
 | [jolt-lang/http-client](https://github.com/jolt-lang/http-client) | OTLP transport, including TLS |
 | [jolt-lang/jolt-crypto](https://github.com/jolt-lang/jolt-crypto) | the OpenSSL (`libssl`/`libcrypto`) declarations TLS needs |
 | [jolt-lang/logging](https://github.com/jolt-lang/logging) | `clojure.tools.logging`, for the logs bridge |
+| [clojure/data.json](https://github.com/clojure/data.json) | reading OTLP/JSON, in `otel.otlp.decode` |
+| [jolt-lang/time](https://github.com/jolt-lang/time) | the `java.time` formatter classes data.json loads |
 
-All three are git coordinates in `deps.edn`; https also needs the system OpenSSL
+All of these are git coordinates in `deps.edn`; https also needs the system OpenSSL
 (`brew install openssl@3` on macOS, the distro `libssl3` on Linux).
 
 ## Requirements
@@ -92,6 +94,12 @@ work entirely.
 Attributes removed from a future metric view may appear as exemplar filtered
 attributes. Treat exemplar sampling as another telemetry export path for
 sensitive data; use AlwaysOff if that is not acceptable.
+
+`otel.otlp.decode/metrics-request` reads an OTLP/JSON metrics request back into
+the same canonical shape, exemplars included, for a receiver or a test. It is
+strict: a malformed id or timestamp, a missing or doubled numeric arm, or a
+duplicate attribute key throws `ex-info` rather than being dropped. Unknown
+fields are ignored, as the OTLP spec requires.
 
 ### Without an SDK
 
