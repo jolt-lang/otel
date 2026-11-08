@@ -1,0 +1,32 @@
+name: tests
+on: [push, pull_request]
+# CI tracks jolt's nightly build (release tag vnightly, the rolling build of
+# jolt's main), so a jolt change that breaks this library shows up the day it
+# lands rather than at the next release.
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        jolt: ['nightly']
+    name: test (jolt ${{ matrix.jolt }})
+    env:
+      JOLT_VERSION: ${{ matrix.jolt }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jolt
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y liblz4-1 zlib1g libtinfo6 libssl3
+          # Install through jolt's own install script rather than resolving the
+          # release asset here: it owns the archive and binary naming (which
+          # changed in v0.5.0, when the CLI was renamed from joltc to jolt) and
+          # verifies the checksum.
+          curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+            | bash -s -- --dir "$HOME/.jolt" --version "$JOLT_VERSION"
+          echo "$HOME/.jolt" >> "$GITHUB_PATH"
+      - name: tests
+        run: jolt -M:test -m otel.test-runner
