@@ -14,7 +14,7 @@ correlates log lines with the span they were written inside.
 | Library | Why |
 | --- | --- |
 | [jolt-lang/http-client](https://github.com/jolt-lang/http-client) | OTLP transport, including TLS |
-| [jolt-lang/jolt-crypto](https://github.com/jolt-lang/jolt-crypto) | the OpenSSL (`libssl`/`libcrypto`) declarations TLS needs |
+| [jolt-lang/crypto](https://github.com/jolt-lang/crypto) | the OpenSSL (`libssl`/`libcrypto`) declarations TLS needs |
 | [jolt-lang/logging](https://github.com/jolt-lang/logging) | `clojure.tools.logging`, for the logs bridge |
 | [clojure/data.json](https://github.com/clojure/data.json) | reading OTLP/JSON, in `otel.otlp.decode` |
 | [jolt-lang/time](https://github.com/jolt-lang/time) | the `java.time` formatter classes data.json loads |

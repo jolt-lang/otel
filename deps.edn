@@ -9,7 +9,8 @@
  :deps {jolt-lang/http-client {:git/url "https://github.com/jolt-lang/http-client"
                                :git/tag "v0.1.4"
                                :git/sha "e0c935e99b92db8e0934867f1cebcf11b3f837a5"}
-        jolt-lang/jolt-crypto {:git/url "https://github.com/jolt-lang/jolt-crypto"
+        jolt-lang/jolt-crypto {:git/url "https://github.com/jolt-lang/crypto"
+                               :git/tag "v0.2.0"
                                :git/sha "e6981b853adc543120b785a0c29b6d7d6a10f0fe"}
         org.clojure/tools.logging {:git/url "https://github.com/jolt-lang/logging"
                                    :git/sha "ec6747e55583118d881faf4ab41e68d7e587ce4c"}
