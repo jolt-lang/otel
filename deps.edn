@@ -21,8 +21,8 @@
                                :git/tag "v2.5.2"
                                :git/sha "1fce9070ee851f49a6c4ce6e1c0bb0db4d7594a0"}
         io.github.jolt-lang/time {:git/url "https://github.com/jolt-lang/time"
-                                  :git/tag "v0.0.16"
-                                  :git/sha "a6690ca1ae69585681965823959eef33707239ce"}}
+                                  :git/tag "v0.0.17"
+                                  :git/sha "8daa9dd95d87a57393c17d83a8f9a1e37b966bbe"}}
 
  :aliases {:test {:extra-paths ["test"]}}
 
